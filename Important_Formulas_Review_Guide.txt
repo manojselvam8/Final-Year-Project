@@ -1,0 +1,597 @@
+================================================================================
+  IMPORTANT FORMULAS — REVIEW GUIDE
+  DK_SOFNN_CCPP Fixed.ipynb  &  DK_SOFNN_CCPP Novel.ipynb
+================================================================================
+
+This guide lists every formula that is likely to be asked about in a review,
+including WHERE each formula appears in the code (cell number + code snippet)
+and WHAT it does in plain English.
+
+================================================================================
+SECTION A — NETWORK ARCHITECTURE & FORWARD PASS
+================================================================================
+
+--------------------------------------------------------------------------------
+FORMULA A1: Gaussian Membership Function (Eq. 5)
+Paper reference: Eq. 5
+Location: Cell 3 (RBFFNN class), method forward()
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    diff = x[None, :] - self.C                          # (K, P)
+    u = np.exp(-0.5 * ((diff / (self.S + 1e-8)) ** 2).sum(1))   # (K,)
+
+FORMULA (for rule l, input x):
+    u_l = exp( -0.5 * sum_p[ (x_p - C_lp) / S_lp ]^2 )
+
+WHERE:
+    x_p   = p-th feature of input
+    C_lp  = p-th coordinate of center of rule l
+    S_lp  = p-th width (spread) of rule l
+    K     = number of fuzzy rules
+    P     = number of input features (4 for CCPP)
+
+WHAT IT DOES:
+    Computes how much rule l "fires" for input x.
+    The output u_l is in [0, 1]: it is 1 when x = C_l (exactly at center)
+    and decreases smoothly as x moves away from C_l.
+    Wider S_lp means the rule fires over a broader region.
+
+--------------------------------------------------------------------------------
+FORMULA A2: Normalized Firing Strength (Eq. 6)
+Paper reference: Eq. 6
+Location: Cell 3 (RBFFNN class), method forward()
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    v = u / (u.sum() + 1e-10)    # (K,) normalized
+
+FORMULA:
+    v_l = u_l / sum_{j=1}^{K} u_j
+
+WHAT IT DOES:
+    Normalises all rule activations to sum to 1.
+    This ensures the network output is a convex combination of rule weights.
+    Without normalisation, the output would grow with more rules.
+
+--------------------------------------------------------------------------------
+FORMULA A3: Network Output (Eq. 7 / 16)
+Paper reference: Eq. 7 (source) / Eq. 16 (target)
+Location: Cell 3 (RBFFNN class), method forward()
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    y = float(self.W @ v)
+
+FORMULA:
+    y = sum_{l=1}^{K} W_l * v_l
+
+WHERE:
+    W_l = output weight of rule l
+    v_l = normalized firing strength of rule l (from A2)
+
+WHAT IT DOES:
+    Computes the network's prediction as a weighted sum of normalized
+    rule activations. Each rule l contributes W_l to the output in
+    proportion to how much it fires (v_l).
+
+================================================================================
+SECTION B — PARAMETER LEARNING (GRADIENT DESCENT)
+================================================================================
+
+--------------------------------------------------------------------------------
+FORMULA B1: Weight Gradient (Eq. 8 / data-driven part of Eq. 27)
+Paper reference: Eq. 8 for source, Eq. 27 for target
+Location: Cell 3 (RBFFNN class), method update()
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    e = y - yd                     # prediction error
+    gW = alpha * e * v             # (K,)
+    if beta > 0 and Ws is not None:
+        n = min(self.K, len(Ws))
+        gW[:n] += beta * (self.W[:n] - Ws[:n])
+
+FORMULA:
+    ∂L/∂W_l = alpha * (y - y_d) * v_l  +  beta * (W_l - W_l^src)
+
+WHERE:
+    e = y - y_d         (prediction error)
+    v_l                 (normalized firing strength)
+    alpha               (data-driven weight, 0.5 ≤ alpha ≤ 1.0)
+    beta = 1 - alpha    (knowledge-driven weight)
+    W_l^src             (weight of corresponding source rule)
+
+WHAT IT DOES:
+    Adjusts output weights to reduce prediction error.
+    The alpha*e*v_l term pushes W_l to fit the target data.
+    The beta*(W_l - W_l^src) term acts as regularisation: if the target
+    weight drifts too far from the source, it gets pulled back.
+    beta=0 → pure data learning; alpha=0 → pure source copying.
+
+UPDATE RULE:
+    W_l ← W_l - lr * ∂L/∂W_l
+
+--------------------------------------------------------------------------------
+FORMULA B2: Center Gradient (Eq. 9 / Eq. 27)
+Paper reference: Eq. 9, 27
+Location: Cell 3 (RBFFNN class), method update()
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    s2 = self.S[b] ** 2 + 1e-8
+    Dc = v[b] * (self.W[b] - y) * (x - self.C[b]) / s2
+    gC[b] = alpha * e * Dc
+
+FORMULA:
+    ∂L/∂C_lp = alpha * e * v_l * (W_l - y) * (x_p - C_lp) / S_lp^2
+
+WHAT IT DOES:
+    Moves the center C_l toward or away from the current input x,
+    depending on whether rule l helps or hurts the prediction.
+    If W_l > y: rule l is over-predicting → move center away from x.
+    If W_l < y: rule l is under-predicting → move center toward x.
+
+--------------------------------------------------------------------------------
+FORMULA B3: Width Gradient (Eq. 9 / Eq. 27)
+Paper reference: Eq. 9, 27
+Location: Cell 3 (RBFFNN class), method update()
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    s3 = self.S[b] ** 3 + 1e-8
+    Ds = v[b] * (self.W[b] - y) * (x - self.C[b]) ** 2 / s3
+    gS[b] = alpha * e * Ds
+
+FORMULA:
+    ∂L/∂S_lp = alpha * e * v_l * (W_l - y) * (x_p - C_lp)^2 / S_lp^3
+
+WHAT IT DOES:
+    Adjusts the spread (width) of rule l.
+    A wider rule covers a larger input region.
+    This allows the network to adapt the "coverage area" of each rule
+    to the local density of training data.
+
+================================================================================
+SECTION C — FUZZY RULE INDICES
+================================================================================
+
+--------------------------------------------------------------------------------
+FORMULA C1: Similarity (Redundancy) Index R_l (Eq. 10)
+Paper reference: Eq. 10
+Location: Cell 4 (compute_indices function)
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    total_u = U.sum(1)    # (N,) sum of all rule activations
+    R = np.zeros(K)
+    for l in range(K):
+        a = U[:, l] - U[:, l].mean()
+        b = total_u - total_u.mean()
+        denom = np.linalg.norm(a) * np.linalg.norm(b) + eps
+        R[l] = 1.0 / (abs(float(a @ b) / denom) + eps)
+
+FORMULA:
+    R_l = 1 / |corr(u_l, sum_j u_j)|
+
+WHERE:
+    u_l      = activation of rule l over N window samples
+    sum_j u_j = total activation of all rules (over same N samples)
+    corr()   = Pearson correlation coefficient
+
+WHAT IT DOES:
+    Measures how "similar" (redundant) rule l is to the overall network.
+    - If u_l is highly correlated with the total activations → R_l is SMALL
+      → rule l is very redundant (fires whenever other rules fire)
+    - If u_l fires independently → R_l is LARGE → rule is unique
+    
+    USE: High R_l → candidate for pruning (redundant rule)
+         Low R_l  → candidate for growing (unique rule worth expanding on)
+
+--------------------------------------------------------------------------------
+FORMULA C2: Sensitivity (Activity) Index M_l (Eq. 11)
+Paper reference: Eq. 11
+Location: Cell 4 (compute_indices function)
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    M = U.sum(0) / (U.sum() + eps)    # (K,)
+
+FORMULA:
+    M_l = sum_{t=1}^{N} u_l(t) / sum_{j=1}^{K} sum_{t=1}^{N} u_j(t)
+
+WHAT IT DOES:
+    Measures the "share of total firing" belonging to rule l.
+    - High M_l → rule l fires frequently → active and important
+    - Low M_l  → rule l rarely fires → potentially useless
+
+    USE: Low M_l  → candidate for pruning (inactive rule)
+         High M_l → candidate for growing (active region worth expanding)
+
+--------------------------------------------------------------------------------
+FORMULA C3: Contribution Index C_l (Eq. 12)
+Paper reference: Eq. 12
+Location: Cell 4 (compute_indices function)
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    C = np.zeros(K)
+    for l in range(K):
+        a = U[:, l] - y_arr
+        b = total_u - y_arr
+        denom = np.linalg.norm(a) * np.linalg.norm(b) + eps
+        d_l = float(a @ b) / denom
+        C[l] = 1.0 / (abs(d_l) + eps)
+
+FORMULA:
+    C_l = 1 / |corr(u_l - y, sum_j u_j - y)|
+
+WHAT IT DOES:
+    Measures how much rule l's activation pattern differs from the
+    output when compared to the total network.
+    - High C_l → rule l's pattern is distinctive from total → highly contributing
+    - Low C_l  → rule l's pattern mirrors the output → less individual contribution
+
+    USE: High C_l → rule is contributing uniquely (good to keep)
+         Low C_l  → rule is just following the crowd (candidate for pruning)
+
+================================================================================
+SECTION D — STRUCTURE ADJUSTMENT (SOURCE FNN)
+================================================================================
+
+--------------------------------------------------------------------------------
+FORMULA D1: Source Growing Criterion (Eq. 13)
+Paper reference: Eq. 13
+Location: Cell 5 (train_source_fnn), inside structure adjustment block
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    gi = np.argmin(R)
+    if (gi == np.argmax(M) == np.argmax(C) and fnn.K < K_max):
+        fnn.add_rule(x, gi)
+
+RULE:
+    GROW if: argmin(R) == argmax(M) == argmax(C)
+    (The same rule has minimum similarity, maximum sensitivity, AND maximum contribution)
+
+WHAT IT DOES:
+    The one rule that is least redundant, most active, AND most contributing
+    is a sign that the network has found a "crowded" region in input space
+    that deserves to be split into two rules.
+    A new rule is added centered at the current input, with width based on
+    the distance from the selected rule's center.
+
+--------------------------------------------------------------------------------
+FORMULA D2: Source Pruning Criterion (Eq. 15)
+Paper reference: Eq. 15
+Location: Cell 5 (train_source_fnn), inside structure adjustment block
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    pi = np.argmax(R)
+    elif (pi == np.argmin(M) == np.argmin(C) and fnn.K > K_min):
+        fnn.del_rule(pi)
+
+RULE:
+    PRUNE if: argmax(R) == argmin(M) == argmin(C)
+    (The same rule has maximum similarity, minimum sensitivity, AND minimum contribution)
+
+WHAT IT DOES:
+    The one rule that is most redundant, least active, AND least contributing
+    is simply a copy of other rules and brings no value.
+    It is removed to keep the network compact.
+
+================================================================================
+SECTION E — DK-SOFNN: STRUCTURE COMPENSATION (TARGET)
+================================================================================
+
+--------------------------------------------------------------------------------
+FORMULA E1: Target Growing Criterion (Eq. 17)
+Paper reference: Eq. 17
+Location: Cell 6 (train_dk_sofnn), structure compensation block
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    if (Rbar_t <= Rbar_s and Mbar_t >= Mbar_s and
+            Cbar_t <= Cbar_s and fnn.K < K_max):
+        l = int(np.argmax(C_t))
+        fnn.add_rule(x, l)
+
+RULE:
+    GROW if: mean_R_target <= mean_R_source
+         AND mean_M_target >= mean_M_source
+         AND mean_C_target <= mean_C_source
+
+WHAT IT DOES:
+    Compares the TARGET network's average index values to the SOURCE network's
+    reference values (computed on clean source data).
+    - Rbar_t <= Rbar_s: target rules are NOT overly redundant (good sign to grow)
+    - Mbar_t >= Mbar_s: target rules are more active than source (needs finer coverage)
+    - Cbar_t <= Cbar_s: target rules have lower individual contribution (need more rules)
+    When all three hold: add a rule centered at the highest-C target rule.
+
+--------------------------------------------------------------------------------
+FORMULA E2: Target Pruning Criteria (Eq. 19)
+Paper reference: Eq. 19
+Location: Cell 6 (train_dk_sofnn), structure compensation block
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    cond_A = (Rbar_t >= Rbar_s and Cbar_t >= Cbar_s)
+    cond_B = (Mbar_t <= Mbar_s and Cbar_t >= Cbar_s)
+
+    if cond_A and cond_B:
+        prune_l = int(np.argmax(R_t - M_t - C_t))
+    elif cond_A:
+        if Mbar_t <= Mbar_s:
+            prune_l = int(np.argmin(M_t))
+        else:
+            prune_l = int(np.argmax(R_t))
+    elif cond_B:
+        ...
+
+RULE:
+    Condition A: mean_R_target >= mean_R_source  (too redundant compared to source)
+                 AND mean_C_target >= mean_C_source
+    Condition B: mean_M_target <= mean_M_source  (less active than source)
+                 AND mean_C_target >= mean_C_source
+
+WHAT IT DOES:
+    Various combinations of these conditions indicate that the target network
+    has more redundancy or less activity than the source reference.
+    In those cases, the weakest rule (by R-M-C score) is pruned.
+
+--------------------------------------------------------------------------------
+FORMULA E3: Target Compensation Phase (Eq. 20)
+Paper reference: Eq. 20
+Location: Cell 6 (train_dk_sofnn), structure compensation block
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    score_t = -R_t + M_t + C_t
+    l_worst = int(np.argmin(score_t))
+    z_best  = int(np.argmax(np.abs(src_fnn.W)))
+    fnn.replace_rule(l_worst, src_fnn.C[z_best], src_fnn.S[z_best], src_fnn.W[z_best])
+
+RULE:
+    COMPENSATE if: (Rbar_t >= Rbar_s OR Mbar_t <= Mbar_s) AND Cbar_t <= Cbar_s
+
+    Replace the target rule with score = -R + M + C that is lowest
+    with the source rule that has the highest |W| (strongest output weight).
+
+WHAT IT DOES:
+    When the target structure is degraded (too redundant or too inactive)
+    but a full prune is not warranted, replace the weakest target rule
+    with the strongest source rule. This "injects" proven source knowledge
+    directly into the target network.
+
+================================================================================
+SECTION F — DK-SOFNN: PARAMETER REINFORCEMENT
+================================================================================
+
+--------------------------------------------------------------------------------
+FORMULA F1: H-Framework Value Function (Eq. 28)
+Paper reference: Eq. 28
+Location: Cell 6 (train_dk_sofnn), parameter reinforcement block
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    alphas = np.linspace(0.50, 1.00, H)   # H=10 alpha values
+    betas  = 1.0 - alphas
+    ...
+    for h in range(H):
+        # Try update with (alpha_h, beta_h)
+        fnn.update(x, y, yd, u, v, alpha=alphas[h], beta=betas[h], ...)
+        # Lookahead: error on NEXT sample
+        if t + 1 < len(Xtt):
+            y_next, _, _ = fnn.forward(Xtt[t + 1])
+            score = (y_next - ytt[t + 1]) ** 2
+        else:
+            score = (fnn.forward(x)[0] - yd) ** 2
+
+FORMULA:
+    V_h = (y_hat_{t+1}^h - y_{t+1})^2   (1-step lookahead error for framework h)
+
+WHERE:
+    y_hat_{t+1}^h = prediction on NEXT sample after update with (alpha_h, beta_h)
+    y_{t+1}       = actual label of next sample
+
+WHAT IT DOES:
+    Instead of committing to one (alpha, beta) pair, tries H different pairs
+    and picks the one that results in the BEST prediction on the NEXT sample.
+    This is a form of online model selection / look-ahead learning.
+    alpha controls how much to trust the target data vs. the source knowledge.
+
+--------------------------------------------------------------------------------
+FORMULA F2: Optimal Framework Selection (Eq. 30)
+Paper reference: Eq. 30
+Location: Cell 6 (train_dk_sofnn), parameter reinforcement block
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    if score < best_score:
+        best_score = score
+        best_W, best_C, best_S = fnn.W.copy(), fnn.C.copy(), fnn.S.copy()
+    # After trying all H:
+    fnn.W, fnn.C, fnn.S = best_W, best_C, best_S
+
+FORMULA:
+    h* = argmin_{h=1..H} V_h
+    theta* = theta_{h*}
+
+WHAT IT DOES:
+    The framework h* with the lowest lookahead error is selected.
+    The target network adopts the parameters produced by update h*.
+    All other H-1 updates are discarded (only the best is kept).
+
+================================================================================
+SECTION G — EVALUATION METRICS
+================================================================================
+
+--------------------------------------------------------------------------------
+FORMULA G1: Root Mean Square Error — RMSE (Eq. 42)
+Location: Cell 8 (compute_rmse function) in both notebooks
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    return float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
+
+FORMULA:
+    RMSE = sqrt( (1/N) * sum_{t=1}^{N} (y_hat_t - y_t)^2 )
+
+WHAT IT DOES:
+    Primary performance metric. Measures average prediction error in the
+    same units as the output. Penalises large errors heavily (squared term).
+    Lower is better.
+
+--------------------------------------------------------------------------------
+FORMULA G2: Symmetric MAPE — sMAPE (Eq. 43)
+Location: Cell 8 (compute_smape function) in both notebooks
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    num = 2 * np.abs(y_pred - y_true)
+    den = np.abs(y_pred) + np.abs(y_true) + 1e-10
+    return float(np.mean(num / den))
+
+FORMULA:
+    sMAPE = (1/N) * sum_{t=1}^{N} [ 2*|y_hat_t - y_t| / (|y_hat_t| + |y_t|) ]
+
+WHAT IT DOES:
+    Scale-independent percentage error. Unlike MAPE, it is symmetric
+    (treats over- and under-predictions equally) and bounded.
+    Lower is better.
+
+--------------------------------------------------------------------------------
+FORMULA G3: Mean Absolute Scaled Error — MASE (Eq. 44)
+Location: Cell 8 (compute_mase function) in both notebooks
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    scale = np.mean(np.abs(y_true[1:] - y_true[:-1])) + 1e-10
+    return float(np.mean(np.abs(y_pred - y_true)) / scale)
+
+FORMULA:
+    MASE = mean(|y_hat_t - y_t|) / mean(|y_t - y_{t-1}|)
+
+WHAT IT DOES:
+    Compares the model's MAE to a naive forecast (predicting the previous value).
+    MASE < 1 means the model is better than the naive forecast.
+    Scale-independent (robust to output units).
+    Lower is better.
+
+================================================================================
+SECTION H — NOVEL CONTRIBUTION: ASGBC (Novel Notebook Only)
+================================================================================
+
+--------------------------------------------------------------------------------
+FORMULA H1: Label Bias Estimation (ASGBC, Novel Contribution)
+Location: Cell 8 (train_asgbc_dk_sofnn function) — NOVEL NOTEBOOK ONLY
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    src_pred_Xtt = np.array([src_fnn.forward(x)[0] for x in Xtt])
+    delta_hat = float(np.mean(ytt - src_pred_Xtt))
+
+FORMULA:
+    delta_hat = (1/n_tgt_tr) * sum_{t=1}^{n_tgt_tr} [ y_tt_noisy(t) - f_src(X_tt(t)) ]
+
+WHERE:
+    y_tt_noisy(t)   = t-th noisy training label (true output + noise)
+    f_src(X_tt(t))  = source FNN prediction on t-th target training input
+    n_tgt_tr        = number of target training samples (100)
+
+WHAT IT DOES:
+    Estimates the systematic bias in the training labels.
+    - y_tt_noisy(t) = y_clean(t) + noise(t)
+    - f_src(X_tt(t)) ≈ y_clean(t)  (source FNN trained on clean data)
+    - Therefore: delta_hat ≈ mean(noise) = mu (the noise mean)
+    
+    In the CCPP experiment: true noise mean = 50 MW / 70.2 MW range ≈ 0.71 (norm)
+    ASGBC estimates this from data alone (no knowledge of the noise distribution).
+
+--------------------------------------------------------------------------------
+FORMULA H2: Bias-Corrected Training Labels (ASGBC)
+Location: Cell 8 (train_asgbc_dk_sofnn function) — NOVEL NOTEBOOK ONLY
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    ytt_bc = ytt - delta_hat
+
+FORMULA:
+    y_tt_bc(t) = y_tt_noisy(t) - delta_hat
+
+WHAT IT DOES:
+    Removes the estimated bias from all training labels.
+    After correction: y_tt_bc(t) ≈ y_clean(t)
+    The DK-SOFNN is then trained on y_tt_bc instead of y_tt_noisy.
+    Since y_tt_bc ≈ y_clean, the model learns the correct input-output mapping.
+
+================================================================================
+SECTION I — NORMALISATION FORMULAS
+================================================================================
+
+--------------------------------------------------------------------------------
+FORMULA I1: Feature Normalisation
+Location: Cell 2 (prepare_ccpp function) in both notebooks
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    Xmin, Xmax = Xs.min(0), Xs.max(0)
+    def norm_X(X): return (X - Xmin) / (Xmax - Xmin + 1e-8)
+
+FORMULA:
+    X_norm = (X - X_min) / (X_max - X_min)
+    (computed separately for each feature dimension)
+
+WHAT IT DOES:
+    Scales all input features to [0, 1] using the SOURCE domain's range.
+    The same scaling is applied to target data (ensures same input space).
+
+--------------------------------------------------------------------------------
+FORMULA I2: Output Normalisation
+Location: Cell 2 (prepare_ccpp function) in both notebooks
+--------------------------------------------------------------------------------
+
+CODE SNIPPET:
+    ymin, ymax = ys.min(), ys.max()
+    def norm_y(y): return (y - ymin) / (ymax - ymin + 1e-8)
+
+FORMULA:
+    y_norm = (y - y_min) / (y_max - y_min)
+    (computed on SOURCE domain only: ymin = 420.26 MW, ymax = 495.76 MW)
+
+WHAT IT DOES:
+    Scales the power plant output (PE) to [0, 1].
+    y_max - y_min ≈ 70.2 MW — this is the "range" used throughout.
+    RMSE × 70.2 MW converts normalised RMSE back to megawatts.
+
+================================================================================
+QUICK REFERENCE TABLE FOR REVIEW
+================================================================================
+
+  FORMULA     | WHAT              | WHERE (Cell)   | KEY CODE
+  ------------|-------------------|----------------|---------------------------------
+  A1          | Gaussian RBF      | Cell 3         | u=exp(-0.5*((diff/S)**2).sum(1))
+  A2          | Normalised firing | Cell 3         | v = u / (u.sum() + 1e-10)
+  A3          | Network output    | Cell 3         | y = W @ v
+  B1          | Weight gradient   | Cell 3         | gW = alpha*e*v + beta*(W-Ws)
+  B2          | Center gradient   | Cell 3         | Dc = v[b]*(W[b]-y)*(x-C[b])/s2
+  B3          | Width gradient    | Cell 3         | Ds = v[b]*(W[b]-y)*(x-C)^2/s3
+  C1          | Similarity R      | Cell 4         | R[l] = 1/|corr(u_l, sum_u)|
+  C2          | Sensitivity M     | Cell 4         | M = U.sum(0) / U.sum()
+  C3          | Contribution C    | Cell 4         | C[l] = 1/|corr(u_l-y, sum_u-y)|
+  D1          | Source grow       | Cell 5         | argmin(R)==argmax(M)==argmax(C)
+  D2          | Source prune      | Cell 5         | argmax(R)==argmin(M)==argmin(C)
+  E1          | Target grow       | Cell 6         | Rbar_t<=Rbar_s, Mbar_t>=Mbar_s
+  E2          | Target prune      | Cell 6         | Rbar_t>=Rbar_s (various)
+  E3          | Target compensate | Cell 6         | replace_rule(worst, best_src)
+  F1          | Lookahead value   | Cell 6         | score=(y_next - ytt[t+1])^2
+  F2          | Best framework    | Cell 6         | argmin(score) over H frameworks
+  G1          | RMSE              | Cell 8         | sqrt(mean((y_pred-y_true)^2))
+  G2          | sMAPE             | Cell 8         | mean(2*|e|/(|yp|+|yt|))
+  G3          | MASE              | Cell 8         | MAE / mean(|y[t]-y[t-1]|)
+  H1 (Novel)  | Bias estimate     | Novel Cell 8   | delta=mean(ytt-src_pred(Xtt))
+  H2 (Novel)  | Label correction  | Novel Cell 8   | ytt_bc = ytt - delta_hat
+  I1          | Feature norm      | Cell 2         | (X-Xmin)/(Xmax-Xmin)
+  I2          | Output norm       | Cell 2         | (y-ymin)/(ymax-ymin)
